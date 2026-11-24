@@ -187,7 +187,7 @@ def split_script(text):
     for para in text.splitlines():
         for sentence in re.split(r"(?<=[.!?;])\s+|(?<=[。！？；])", para.strip()):
             while sentence:
-                if len(buf) + len(sentence) + 1 <= 240:
+                if len(buf) + len(sentence) + bool(buf) <= 240:
                     buf = (buf + " " + sentence).strip()
                     break
                 if buf:

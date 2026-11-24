@@ -19,3 +19,9 @@
 !/Scripts/check_models.py
 !/Scripts/requirements.lock
 !/Scripts/package.sh
+!/LICENSE
+!/Tests/
+!/Tests/test_narration.py
+!/.github/
+!/.github/workflows/
+!/.github/workflows/checks.yml
