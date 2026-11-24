@@ -1,0 +1,22 @@
+Narrator Studio — local audio components
+
+Speech synthesis: Qwen3-TTS-12Hz-1.7B-Base, by the Qwen team (Apache 2.0).
+8-bit MLX conversion by mlx-community. The model files are distributed unchanged.
+https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base
+https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit
+
+Transcription: OpenAI Whisper (MIT), converted to CTranslate2 by Systran.
+https://github.com/openai/whisper
+https://huggingface.co/Systran/faster-whisper-base
+
+Speaker measurement: WeSpeaker VoxCeleb ResNet34-LM, by the WeSpeaker authors,
+under Creative Commons Attribution 4.0. Uses the ONNX conversion distributed
+in csukuangfj/speaker-embedding-models. The ONNX file is unchanged.
+https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM
+https://huggingface.co/csukuangfj/speaker-embedding-models
+https://creativecommons.org/licenses/by/4.0/
+
+The Python runtime includes license files and metadata shipped by its packages.
+The packaged FFmpeg executable is distributed by imageio-ffmpeg.
+https://github.com/imageio/imageio-ffmpeg
+https://ffmpeg.org/
