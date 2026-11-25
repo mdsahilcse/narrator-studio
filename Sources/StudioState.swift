@@ -27,7 +27,7 @@ struct Take: Codable, Identifiable {
     var score: Double?; var scoreScope: String?; var transcript: String?; var errorRate: Double?
     var profileName: String?
     var profile: String?; var text: String?; var language: String?
-    var speed: Double?; var pause: Double?; var attempts: Int?; var adaptive: Bool?
+    var speed: Double?; var pause: Double?
     var renderSeconds: Double?; var reused: Int?; var reuseSignature: String?
     var url: URL { library.appendingPathComponent("Takes").appendingPathComponent(id).appendingPathComponent(file) }
 }
@@ -96,7 +96,6 @@ enum SectionName: String, CaseIterable { case voiceover = "Voiceover", cleanup =
     @Published var notice = ""
     @Published var language = "Auto"
     @Published var speed = 1.0
-    @Published var count = 0
     @Published var pause = 0.18
     @Published var editTake: Take?
     @Published var takeSearch = ""
@@ -159,7 +158,7 @@ enum SectionName: String, CaseIterable { case voiceover = "Voiceover", cleanup =
     func generate(preview: Bool = false) {
         guard let p = profile else { return }
         var request: [String: Any] = ["action":"generate", "profile":p.id, "text":script,
-            "attempts":count == 0 ? 6 : count, "adaptive":count == 0, "preview":preview,
+            "preview":preview,
             "language":language.lowercased(), "speed":speed, "pause":pause]
         if let take = editTake, !preview { request["editTake"] = take.id }
         start(request)
@@ -169,7 +168,6 @@ enum SectionName: String, CaseIterable { case voiceover = "Voiceover", cleanup =
         selected = id; script = text; editTake = take
         language = (take.language ?? "auto").capitalized
         speed = take.speed ?? 1; pause = take.pause ?? 0.18
-        count = take.adaptive == true ? 0 : (take.attempts ?? 6)
         section = .voiceover; notice = ""
     }
     func clean() {

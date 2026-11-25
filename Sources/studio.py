@@ -181,11 +181,36 @@ def import_profile(req):
     event("Voice added", profile=identity)
 
 
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;])\s+|(?<=[。！？；])")
+LEADING_MARKS = re.compile(r"^(?:[ ,;:—–_/\\、，；：・。!?！？]+|[.-](?!\d))+")
+
+
+def narration_paragraphs(text):
+    """Remove pasted markup and keep a blank line as an intentional pause."""
+    for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n").replace("\r", "\n")):
+        lines = []
+        for line in block.splitlines():
+            line = re.sub(r"^\s*(?:[-*+•]\s+|>\s*)", "", line)
+            line = line.translate(str.maketrans("", "", '"“”„«»「」『』`'))
+            line = re.sub(r"_+", " ", line)
+            line = re.sub(r"(?<!\d)[—–]+|[—–]+(?!\d)|\s+-+\s+|--+", ", ", line)
+            line = re.sub(r"[,，](?:\s*[,，])+", ", ", line)
+            line = LEADING_MARKS.sub("", " ".join(line.split()))
+            if not text_units(line):
+                continue
+            line = line.rstrip(" ,;:—–-_/\\、，；：・")
+            lines.append(line)
+        if lines:
+            yield " ".join(lines)
+
+
 def split_script(text):
     """Prefer sentence and word boundaries, including scripts without spaces."""
-    chunks, buf = [], ""
-    for para in text.splitlines():
-        for sentence in re.split(r"(?<=[.!?;])\s+|(?<=[。！？；])", para.strip()):
+    chunks = []
+    for paragraph in narration_paragraphs(text):
+        buf = ""
+        for sentence in SENTENCE_BOUNDARY.split(paragraph):
+            sentence = LEADING_MARKS.sub("", sentence)
             while sentence:
                 if len(buf) + len(sentence) + bool(buf) <= 240:
                     buf = (buf + " " + sentence).strip()
@@ -193,15 +218,14 @@ def split_script(text):
                 if buf:
                     chunks.append(buf)
                     buf = ""
-                elif len(sentence) > 240:
-                    split = max(sentence.rfind(" ", 65, 240), sentence.rfind(",", 65, 240))
-                    split = split + 1 if split > 0 else 240
-                    chunks.append(sentence[:split].strip())
-                    sentence = sentence[split:].strip()
+                    continue
+                split = max(sentence.rfind(" ", 65, 240), sentence.rfind(",", 65, 240))
+                split = split + 1 if split > 0 else 240
+                chunks.append(sentence[:split].strip())
+                sentence = LEADING_MARKS.sub("", sentence[split:])
         if buf:
             chunks.append(buf)
-            buf = ""
-    return [c for c in chunks if c]
+    return [chunk for chunk in chunks if text_units(chunk)]
 
 
 NUMBER_WORDS = {word: str(number) for number, word in enumerate(
@@ -243,17 +267,28 @@ def finish_take(root, folder, req, path, extra):
     event("Ready to play", take=identity)
 
 
-def tidy_recording(audio, rate, script=None, language=None):
+def cleanup_recording(audio, rate, words, script, language):
     import importlib.util
     spec = importlib.util.spec_from_file_location("speech_cleanup", Path(__file__).with_name("speech_cleanup.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module.tidy(audio, rate, words, script, language == "en")
+
+
+def timed_readback(audio, rate, language, filler_prompt=False):
     mono = audio if audio.ndim == 1 else audio.mean(axis=1)
     segments, info = recognizer().transcribe(at_rate(mono, rate, 16000), language=language,
         beam_size=3, word_timestamps=True, condition_on_previous_text=False,
-        initial_prompt="Um, uh, uhh, erm, ugh." if language == "en" else None)
+        initial_prompt="Um, uh, uhh, erm, ugh." if filler_prompt and language == "en" else None)
+    segments = list(segments)
     words = [word for segment in segments for word in (segment.words or [])]
-    return module.tidy(audio, rate, words, script, info.language == "en")
+    heard = " ".join(segment.text.strip() for segment in segments)
+    return heard, words, info.language
+
+
+def tidy_recording(audio, rate, script=None, language=None):
+    _, words, detected = timed_readback(audio, rate, language, filler_prompt=True)
+    return cleanup_recording(audio, rate, words, script, detected)
 
 
 def cleaned_take(req, root, folder):
@@ -283,15 +318,11 @@ def voice_model(adapter=None):
     return model
 
 
-def reuse_signature(profile_dir, profile, checks, language, attempts, adaptive):
-    # Bind stored audio to the exact voice inputs, even after replacing a profile.
-    digest = hashlib.sha256(json.dumps([profile, checks["validation"], language, attempts, adaptive, 2],
-                                       sort_keys=True).encode())
-    files = [profile_dir / ref["file"] for ref in profile["refs"]]
-    adapter = profile.get("tuning", {}).get("adapter")
-    if adapter:
-        files.append(profile_dir / adapter)
-    for path in files:
+def reuse_signature(profile, reference, adapter, language):
+    # Changing the saved voice or engine invalidates passages rendered with older settings.
+    engine = (RES / "runtime-version").read_text().strip()
+    digest = hashlib.sha256(json.dumps([profile, language, engine, 3], sort_keys=True).encode())
+    for path in filter(None, (reference, adapter)):
         stat = path.stat()
         digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
     return digest.hexdigest()
@@ -315,86 +346,53 @@ def reusable_passages(folder, previous, signature):
     return groups
 
 
-def generate_passage(model, part, profile_dir, profile, checks, language, attempts, adaptive, index, total, base_seed):
+def generate_passage(model, part, reference, ref_text, language, temperature, seed):
     import mlx.core as mx
-    prefs = profile.get("tuning", {})
-    refs = profile["refs"]
-    order = prefs.get("order", list(range(len(refs))))
-    temperatures = prefs.get("temperatures", [.72, .85, .6])
-    target = np.asarray(checks["validation"])
-    winner = None
-    tested = []
-    # Stop on a stable high-quality result after three trials without a meaningful gain.
-    last_gain = 0
-    best_exact_score = -1.0
-    for attempt in range(attempts):
-        slot = order[attempt % len(order)]
-        ref = refs[slot]
-        temperature = temperatures[attempt % len(temperatures)]
-        seed = (base_seed + index * 307 + attempt * 151) % 2**31
-        mx.random.seed(seed)
-        event(f"Passage {index+1} of {total} · Take {attempt+1} of {attempts}")
-        result = list(model.generate(text=part, ref_audio=str(profile_dir/ref["file"]),
-            ref_text=ref["text"], lang_code=language, temperature=temperature,
-            max_tokens=min(1800, max(160, len(part)*6)), verbose=False))
-        if not result:
-            continue
-        samples = np.concatenate([np.asarray(r.audio).reshape(-1) for r in result]).astype("float32")
-        samples = at_rate(samples, int(result[0].sample_rate), RATE)
-        if len(samples) < RATE * .35 or not np.isfinite(samples).all() or np.max(np.abs(samples)) < .001:
-            continue
-        # Rank the sound after the profile's tone correction, as heard in the final take.
-        vector = embedding(match_tone(samples, prefs.get("tone")))
-        score = float(target @ vector)
-        record = dict(reference=slot, temperature=temperature, seed=seed, cosine=score)
-        tested.append(record)
-        # Once we have a word-perfect candidate, a lower-scoring candidate cannot win.
-        if winner and winner[2]["errorRate"] == 0 and score <= winner[2]["cosine"]:
-            if adaptive and attempt >= 3 and best_exact_score >= .92 and attempt - last_gain >= 2:
-                break
-            continue
-        segments, _ = transcribe(samples, LANGUAGES.get(language))
-        heard = " ".join(seg.text.strip() for seg in segments)
-        wer = error_rate(part, heard)
-        record.update(transcript=heard, errorRate=wer)
-        rank = (wer == 0, wer <= .1, score - min(wer, 2)*.8)
-        if winner is None or rank > winner[0]:
-            winner = rank, samples, record
-        if wer == 0 and score > best_exact_score + .01:
-            last_gain = attempt
-            best_exact_score = score
-        if adaptive and attempt >= 3 and best_exact_score >= .92 and attempt - last_gain >= 2:
-            break
-        if wer == 0 and score >= (.95 if adaptive and checks.get("validationRanges") else .98):
-            break
-    if winner is None:
-        raise ValueError("The model produced no usable speech. Try another reference passage.")
-    return winner[1], dict(text=part, selected=winner[2], trials=tested)
+    mx.random.seed(seed)
+    result = list(model.generate(text=part, ref_audio=reference,
+        ref_text=ref_text, lang_code=language, temperature=temperature,
+        max_tokens=min(1800, max(160, len(part)*6)), verbose=False))
+    if not result:
+        raise ValueError("The saved voice produced no speech for this passage.")
+    samples = np.concatenate([np.asarray(r.audio).reshape(-1) for r in result]).astype("float32")
+    samples = at_rate(samples, int(result[0].sample_rate), RATE)
+    if len(samples) < RATE * .08 or not np.isfinite(samples).all() or np.max(np.abs(samples)) < .001:
+        raise ValueError("The saved voice produced no usable speech for this passage.")
+    return samples
+
+
+def smooth_passage_edges(audio):
+    """Suppress discontinuities when a generated waveform meets a new passage."""
+    length = min(len(audio) // 2, round(RATE * .008))
+    if length:
+        ramp = np.linspace(0, 1, length, dtype=np.float32)
+        audio = audio.copy()
+        audio[:length] *= ramp
+        audio[-length:] *= ramp[::-1]
+    return audio
 
 
 def generated_take(req, root, folder):
     script = req["text"].strip()
-    if req.get("preview"):
-        first = next((line.strip() for line in script.splitlines() if line.strip()), "")
-        script = re.split(r"(?<=[.!?])\s+|(?<=[。！？])", first, maxsplit=1)[0]
-        script = next(iter(split_script(script)), "")
     parts = split_script(script)
-    if not parts or not text_units(script):
+    if not parts:
         raise ValueError("Enter some words to narrate.")
+    if req.get("preview"):
+        parts = [SENTENCE_BOUNDARY.split(parts[0], maxsplit=1)[0]]
+        script = parts[0]
     started = time.monotonic()
     profile_dir, profile = read_profile(req["profile"])
-    checks = json.loads((profile_dir / "checks.json").read_text())
     language = req.get("language", "auto").lower()
     speed = max(.75, min(1.4, float(req.get("speed", 1))))
     gap = max(0., min(1.5, float(req.get("pause", .18))))
-    attempts = min(15, max(1, int(req.get("attempts", 3))))
-    adaptive = bool(req.get("adaptive", False))
-    if req.get("preview"):
-        attempts, adaptive = 1, False
-    signature = reuse_signature(profile_dir, profile, checks, language, attempts, adaptive)
-    previous = reusable_passages(folder, req.get("editTake"), signature)
     prefs = profile.get("tuning", {})
+    slot = next(iter(prefs.get("order", [])), 0)
+    ref = profile["refs"][slot]
+    reference_path = profile_dir / ref["file"]
+    temperature = next(iter(prefs.get("temperatures", [])), .72)
     adapter = profile_dir / prefs["adapter"] if prefs.get("adapter") else None
+    signature = reuse_signature(profile, reference_path, adapter, language)
+    previous = reusable_passages(folder, req.get("editTake"), signature)
     model = None
     chosen, details = [], []
     reused = 0
@@ -415,22 +413,28 @@ def generated_take(req, root, folder):
                 pass
         if samples is None:
             if model is None:
-                event("Loading the voice model…")
+                from mlx_audio.utils import load_audio
+                event("Loading the saved voice…")
                 model = voice_model(adapter)
-            samples, detail = generate_passage(model, part, profile_dir, profile, checks, language,
-                attempts, adaptive, index, len(parts), base_seed)
-            original_samples = samples
-            samples, edits = tidy_recording(samples, RATE, part, LANGUAGES.get(language))
-            if edits:
-                checked, _ = transcribe(samples, LANGUAGES.get(language))
-                heard = " ".join(seg.text.strip() for seg in checked)
-                if error_rate(part, heard) > detail["selected"]["errorRate"]:
-                    # A timing boundary clipped speech. Keep the original selected performance.
-                    samples = original_samples
-                    edits = []
+                reference = load_audio(str(reference_path), sample_rate=model.sample_rate)
+            event(f"Rendering passage {index+1} of {len(parts)}")
+            seed = (base_seed + index * 307) % 2**31
+            raw_samples = generate_passage(model, part, reference, ref["text"], language, temperature, seed)
+            lang = LANGUAGES.get(language)
+            heard, words, detected = timed_readback(raw_samples, RATE, lang)
+            wording_error = error_rate(part, heard)
+            samples, edits = cleanup_recording(raw_samples, RATE, words, part, detected)
+            if any(edit["kind"] != "pause" for edit in edits):
+                checked, _ = transcribe(samples, lang)
+                cleaned_text = " ".join(seg.text.strip() for seg in checked)
+                cleaned_error = error_rate(part, cleaned_text)
+                if cleaned_error > wording_error:
+                    samples, edits = raw_samples, []
                 else:
-                    detail["selected"] = dict(detail["selected"], transcript=heard, errorRate=error_rate(part, heard))
-            detail["speechEdits"] = edits
+                    heard, wording_error = cleaned_text, cleaned_error
+            samples = smooth_passage_edges(samples)
+            detail = dict(text=part, selected=dict(reference=slot, temperature=temperature, seed=seed,
+                          transcript=heard, errorRate=wording_error), speechEdits=edits)
         sf.write(root / "Passages" / f"{index:04}.wav", samples, RATE, subtype="FLOAT")
         chosen.append(samples)
         details.append(detail)
@@ -442,18 +446,13 @@ def generated_take(req, root, folder):
     ffmpeg(raw, path, ["-af", f"atempo={speed},alimiter=limit=0.96:level=false:latency=true",
                        "-ar", str(RATE), "-c:a", "pcm_s24le"])
     raw.unlink()
-    rendered, _ = sf.read(path, dtype="float32")
-    audit = checks.get("audit")
-    vector = embedding(rendered)
-    score = float(np.asarray(audit if audit is not None else checks["validation"]) @ vector)
-    scope = "Independent test" if audit is not None else ("Held-out reference" if profile["heldOut"] else "Prompt reference")
     heard = " ".join(d["selected"]["transcript"] for d in details)
+    spoken_script = " ".join(parts)
     name = ("Preview · " if req.get("preview") else "") + script[:60]
     finish_take(root, folder, req, path, dict(name=name, text=script, profile=profile["id"],
-        profileName=profile["name"], score=score, scoreScope=scope, transcript=heard, preview=bool(req.get("preview")),
-        errorRate=error_rate(script, heard), trials=details, speed=speed, pause=gap, language=language,
-        attempts=attempts, adaptive=adaptive, reuseSignature=signature, reused=reused,
-        renderSeconds=round(time.monotonic()-started,2)))
+        profileName=profile["name"], transcript=heard, preview=bool(req.get("preview")),
+        errorRate=error_rate(spoken_script, heard), trials=details, speed=speed, pause=gap, language=language,
+        reuseSignature=signature, reused=reused, renderSeconds=round(time.monotonic()-started,2)))
 
 
 def captions(source, destination, language):

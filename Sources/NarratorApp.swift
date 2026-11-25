@@ -213,9 +213,9 @@ struct ReferenceCard: View {
     var body: some View {
         HStack(spacing:14) {
             VStack(alignment:.leading,spacing:6) {
-                Text("Reference voice").font(.caption).foregroundStyle(lilac)
+                Text("Saved voice").font(.caption).foregroundStyle(lilac)
                 Text(studio.profile?.name ?? "Add a voice").font(.system(size:19,weight:.semibold)).lineLimit(2)
-                Text(studio.profile == nil ? "Drop an audio file here to begin." : "Select a voice from your library.")
+                Text(studio.profile == nil ? "Drop an audio file here to begin." : "Ready to use with any script.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength:10)
@@ -266,12 +266,7 @@ struct Voiceover: View {
                     }.frame(height:20)
                 }
                 Spacer(minLength:0)
-                VStack(alignment:.leading,spacing:5) {
-                    Text("Voice matching").font(.caption).foregroundStyle(.secondary)
-                    Picker("Voice matching",selection:$studio.count) {
-                        Text("Smart match").tag(0); Text("Single take").tag(1); Text("Best of 3").tag(3); Text("Best of 6").tag(6); Text("Up to 15 takes").tag(15)
-                    }.labelsHidden().frame(width:128)
-                }
+
             }
             HStack(spacing:8) {
                 Text("Passage pause").font(.caption).foregroundStyle(.secondary)
@@ -387,10 +382,12 @@ struct TakeCard: View {
                 }.fixedSize().disabled(studio.busy)
             }
             Scrubber(transport:studio.audio,url:take.url)
-            if let score = take.score {
+            if take.transcript != nil || take.score != nil {
                 DisclosureGroup(isExpanded:$details.value) {
                     VStack(alignment:.leading,spacing:6) {
-                        Text("\(take.scoreScope ?? "Voice match") · WeSpeaker cosine similarity, −1 to 1.")
+                        if take.score != nil {
+                            Text("\(take.scoreScope ?? "Voice match") · WeSpeaker cosine similarity, −1 to 1.")
+                        }
                         if let seconds = take.renderSeconds {
                             let reused = take.reused ?? 0
                             Text(String(format:"Rendered in %.1f seconds",seconds) + (reused > 0 ? " · Reused \(reused) passage(s)" : ""))
@@ -398,7 +395,11 @@ struct TakeCard: View {
                         if let transcript = take.transcript { Text("Readback · " + transcript).textSelection(.enabled) }
                     }.font(.caption).foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading).padding(.top,5)
                 } label: {
-                    Text(String(format:"Voice similarity  %.3f",score)).font(.caption.monospacedDigit()).foregroundStyle(mint)
+                    if let score = take.score {
+                        Text(String(format:"Voice similarity  %.3f",score)).font(.caption.monospacedDigit()).foregroundStyle(mint)
+                    } else {
+                        Text("Readback").font(.caption).foregroundStyle(mint)
+                    }
                     if (take.errorRate ?? 0) > 0.10 { Text("Review wording").font(.caption).foregroundStyle(.orange) }
                 }
             }

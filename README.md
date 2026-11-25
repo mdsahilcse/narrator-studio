@@ -11,7 +11,7 @@ Preparation downloads the runtime and model weights. The disk image is written t
 
 ## Working with a recording
 
-Choose **Import Voice** and select clear speech recorded with the speaker's permission. Paste a script in **Voiceover** and preview the first passage. Smart match compares candidate takes using a transcript and a speaker embedding. The similarity score measures agreement between embeddings and has no calibrated conversion to a percentage of perceived likeness.
+Choose **Import Voice** and select clear speech recorded with the speaker's permission. Import saves the reference for later scripts. In **Voiceover**, pick a saved voice, paste a script, and preview the opening or generate the full take. The app generates each passage with the saved voice settings and shows a transcript for review. Single line breaks flow together, blank lines mark passage breaks, and the app cleans up list markers, stray quotes, and underscores before synthesis.
 
 In **Cleanup**, choose a recording or video. Supply the intended script to help preserve deliberate English hesitations. In **Takes**, listen to the result and export WAV, MP3, M4A, or timed SRT captions. Editing a copy can reuse unchanged passages.
 

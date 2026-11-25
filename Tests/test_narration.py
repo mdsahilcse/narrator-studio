@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from Sources.speech_cleanup import tidy
-from Sources.studio import split_script
+from Sources.studio import smooth_passage_edges, split_script
 
 
 class NarrationTests(unittest.TestCase):
@@ -14,6 +14,28 @@ class NarrationTests(unittest.TestCase):
             chunks = split_script(script)
             self.assertEqual("".join(chunks), script)
             self.assertTrue(all(0 < len(chunk) <= 240 for chunk in chunks))
+
+    def test_script_formatting(self):
+        script = (
+            '“Open the dashboard.”\r\n'
+            '- Select Export, then choose the weekly_report.\n\n'
+            '_Your file is ready. — You can share it.'
+        )
+        self.assertEqual(split_script(script), [
+            "Open the dashboard. Select Export, then choose the weekly report.",
+            "Your file is ready. You can share it.",
+        ])
+        self.assertEqual(split_script("-5 degrees\nCheck the eight-foot cable"),
+                         ["-5 degrees Check the eight-foot cable"])
+        self.assertEqual(split_script(", ___ --"), [])
+
+    def test_fade_preserves_passage_interior(self):
+        samples = np.ones(24000, dtype=np.float32)
+        smoothed = smooth_passage_edges(samples)
+        self.assertEqual(len(smoothed), len(samples))
+        self.assertEqual(smoothed[0], 0)
+        self.assertEqual(smoothed[-1], 0)
+        np.testing.assert_array_equal(smoothed[192:-192], samples[192:-192])
 
     def test_long_pause(self):
         tone = np.ones(4800, dtype=np.float32) * .1
