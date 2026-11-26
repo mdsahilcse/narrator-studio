@@ -1,6 +1,10 @@
 # Narrator Studio
 An offline Apple Silicon macOS app for reference-based narration, voice cleanup, and timed captions. Import a recording of your own voice or one you have permission to use. Voice profiles and generated takes are stored in the current user's Application Support directory.
 
+## Project credits
+
+**Md Sahil** created Narrator Studio and is its primary maintainer and lead contributor. [@mdsahilcse on GitHub](https://github.com/mdsahilcse)
+
 ## Build
 On macOS 26 or later with Apple command-line developer tools and Python 3 installed, run from the repository root:
 
